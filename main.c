@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 #include <stdio.h>
 #include <elf.h>
 #include <stdlib.h>
@@ -17,16 +18,20 @@ void encrypt(unsigned char *buf, size_t size)
 		i++;
 	}
 }
-int find_text_section(int fd, Elf64_Off *text_offset, Elf64_Xword *text_size) {
+
+int find_text_section(int fd, Elf64_Off *text_offset, Elf64_Xword *text_size) 
+{
     Elf64_Ehdr ehdr;
 
     lseek(fd, 0, SEEK_SET);
-    if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) {
+    if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) 
+	{
         perror("read ehdr");
         return -1;
     }
 
-    if (ehdr.e_shstrndx == SHN_UNDEF) {
+    if (ehdr.e_shstrndx == SHN_UNDEF) 
+	{
         return -1;
     }
 
@@ -74,30 +79,43 @@ int find_text_section(int fd, Elf64_Off *text_offset, Elf64_Xword *text_size) {
 
 int main()
 {
-	Elf64_Ehdr obj;
-	
-	int fd = open("./a.out", O_RDONLY);
+	Elf64_Ehdr *obj;
+	Elf64_Phdr *phdr;
+	struct stat st;
+	long file_size;
+	int fd;
+	void *data;
+	int load_index = 0;
 
-	read(fd, &obj, sizeof(obj));
-	printf("ELF type : %u\n", obj.e_type);
-	printf("ELF entry point : 0x%lx\n", obj.e_entry);
 	
-	Elf64_Off text_off;
-    Elf64_Xword text_size;
-    if (find_text_section(fd, &text_off, &text_size) == 0) {
-        printf(".text offset: 0x%lx\n", text_off);
-        printf(".text size  : 0x%lx\n", text_size);
-    }
-	unsigned char *code;
-	code = malloc(text_size);
-	lseek(fd, text_off, SEEK_SET);
-	read(fd, code, text_size);	
-	encrypt(code, text_size);
-	add_stub()
-	newelf(fd, "woody_exe", code, text_size, text_off);
-	close(fd);
+	fd = open("./test", O_RDONLY);
+	stat("./test", &st);
+	file_size = st.st_size;
+	data = malloc(file_size + 4096);
+	memset(data, 0, file_size + 4096);
+	read(fd, data, file_size);
+	obj = (Elf64_Ehdr *)data;
+	phdr = (Elf64_Phdr *)(data + obj->e_phoff);
+	for (size_t i = 0; i < obj->e_phnum; i++)
+	{
+		if (phdr[i].p_type == PT_LOAD && (phdr[i].p_flags & PF_X)) 
+		{
+        	load_index = i;
+        	break;
+    	}
+	}
+	printf("index = %d\n", load_index);
+	
+	phdr[load_index].p_flsz += 100;
+   	phdr[load_index].p_memsz += 100;
+
+	// put stub end of the text section and redirect O_EP to stub EP then stub to O_EP
+	//
+	//
 	return 0;
 }
+
+
 
 void newelf(int fd, char *str, unsigned char *code, size_t code_size, Elf64_Off offset)
 {
@@ -114,9 +132,8 @@ void newelf(int fd, char *str, unsigned char *code, size_t code_size, Elf64_Off 
 	}
 	lseek(wr_fd, offset, SEEK_SET);
 	write(wr_fd, code, code_size);
+	lseek(wr_fd, 0, SEEK_SET);
+	put_shellcode(wr_fd);
 	close(wr_fd);
 }
-
-
-
 
