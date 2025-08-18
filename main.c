@@ -106,12 +106,76 @@ int main()
 	}
 	printf("index = %d\n", load_index);
 	
-	phdr[load_index].p_flsz += 100;
+	phdr[load_index].p_filesz += 100;
    	phdr[load_index].p_memsz += 100;
+   	
+   	phdr[load_index].p_flags |= PF_W;  
 
-	// put stub end of the text section and redirect O_EP to stub EP then stub to O_EP
-	//
-	//
+	Elf64_Off text_offset;
+	Elf64_Xword text_size;
+	
+	if (find_text_section(fd, &text_offset, &text_size) == 0) 
+	{
+		Elf64_Off stub_file_offset = phdr[load_index].p_offset + phdr[load_index].p_filesz - 100;
+		Elf64_Addr stub_vaddr = phdr[load_index].p_vaddr + phdr[load_index].p_filesz - 100;
+		
+		unsigned char *text_data = (unsigned char*)data + text_offset;
+		encrypt(text_data, text_size);
+		
+		unsigned char stub_code[] = 
+		{
+			0x50,                                     // push rax
+			0x51,                                     // push rcx
+			0x52,                                     // push rdx
+			0x53,                                     // push rbx
+			
+			0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, // lea rax, [rip + text_offset] (7 bytes)
+			
+			0x48, 0xc7, 0xc1, 0x00, 0x00, 0x00, 0x00, // mov rcx, text_size (7 bytes)
+			
+			0x80, 0x28, 0x0f,                         // sub byte ptr [rax], 15 (3 bytes)
+			0x48, 0xff, 0xc0,                         // inc rax (3 bytes)
+			0x48, 0xff, 0xc9,                         // dec rcx (3 bytes)
+			0x75, 0xf5,                               // jnz -11 (loop back to sub) (2 bytes)
+			
+			0x5b,                                     // pop rbx
+			0x5a,                                     // pop rdx
+			0x59,                                     // pop rcx
+			0x58,                                     // pop rax
+			
+			0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, // lea rax, [rip + original_entry_offset] (7 bytes)
+			0xff, 0xe0                                 // jmp rax (2 bytes)
+		};
+		
+		Elf64_Addr original_entry = obj->e_entry;
+		
+		obj->e_entry = stub_vaddr;
+		Elf64_Addr text_vaddr = 0x1060;
+		int32_t text_rip_offset = (int32_t)(text_vaddr - (stub_vaddr + 11));
+		int32_t entry_rip_offset = (int32_t)(original_entry - (stub_vaddr + sizeof(stub_code) - 2));
+		
+		printf("Stub vaddr: 0x%lx\n", stub_vaddr);
+		printf("Text vaddr: 0x%lx\n", text_vaddr);
+		printf("Text size: 0x%lx (%lu)\n", text_size, text_size);
+		printf("Original entry: 0x%lx\n", original_entry);
+		printf("Text RIP offset: 0x%x\n", text_rip_offset);
+		printf("Entry RIP offset: 0x%x\n", entry_rip_offset);
+		printf("Stub size: %lu\n", sizeof(stub_code));
+		
+		*(int32_t*)(stub_code + 7) = text_rip_offset;           
+		*(uint32_t*)(stub_code + 14) = (uint32_t)text_size;     
+		*(int32_t*)(stub_code + 36) = entry_rip_offset;         
+		
+		int temp_fd = open("temp_packed", O_RDWR | O_CREAT | O_TRUNC, 0755);
+		write(temp_fd, data, file_size);
+		close(temp_fd);
+		
+		temp_fd = open("temp_packed", O_RDONLY);
+		newelf(temp_fd, "packed_test", stub_code, sizeof(stub_code), stub_file_offset);
+		close(temp_fd);
+		unlink("temp_packed");
+	}
+	
 	return 0;
 }
 
@@ -120,20 +184,30 @@ int main()
 void newelf(int fd, char *str, unsigned char *code, size_t code_size, Elf64_Off offset)
 {
 	int wr_fd;
-	size_t  f_size;
-
-	wr_fd = open(str, O_RDWR | O_CREAT | O_TRUNC, 0755 );
+	struct stat st;
+	void *data;
 	
+	fstat(fd, &st);
+	data = malloc(st.st_size);
 	lseek(fd, 0, SEEK_SET);
-	char buf[1];
-	while(read(fd, buf, 1))
-	{
-		write(wr_fd, buf, 1);
-	}
+	read(fd, data, st.st_size);
+	
+	wr_fd = open(str, O_RDWR | O_CREAT | O_TRUNC, 0755);
+	
+	write(wr_fd, data, st.st_size);
+	
 	lseek(wr_fd, offset, SEEK_SET);
 	write(wr_fd, code, code_size);
+	
+	Elf64_Ehdr *ehdr = (Elf64_Ehdr *)data;
 	lseek(wr_fd, 0, SEEK_SET);
-	put_shellcode(wr_fd);
+	write(wr_fd, ehdr, sizeof(Elf64_Ehdr));
+	
+	Elf64_Phdr *phdr = (Elf64_Phdr *)(data + ehdr->e_phoff);
+	lseek(wr_fd, ehdr->e_phoff, SEEK_SET);
+	write(wr_fd, phdr, ehdr->e_phnum * sizeof(Elf64_Phdr));
+	
+	free(data);
 	close(wr_fd);
 }
 
