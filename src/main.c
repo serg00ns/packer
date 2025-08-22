@@ -5,7 +5,6 @@
 #include <elf.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/stat.h>
 #include "woody.h"
 
 static int precheck_elf64(int fd) {
@@ -42,18 +41,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        dprintf(2, "error: invalid file\n");
-        close(fd);
-        return 1;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        dprintf(2, "error: invalid file\n");
-        close(fd);
-        return 1;
-    }
-    if (st.st_size <= 0) {
+    size_t sz_check = 0;
+    if (x_get_file_size(fd, &sz_check) < 0 || sz_check == 0) {
         dprintf(2, "error: invalid file\n");
         close(fd);
         return 1;
